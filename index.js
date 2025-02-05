@@ -6,6 +6,7 @@ let stream = require('stream');
 let path = require('path');
 let os = require('os');
 let puppeteer = require('puppeteer');
+let playwright = require('playwright');
 let typeofFn = typeof function(){};
 let isFunction = x => typeof x === typeofFn;
 let Handlebars = require('handlebars');
@@ -63,14 +64,23 @@ let Cytosnap = function( opts = {} ){
 
   this.options = Object.assign( {
     // top-level defaults -- none currently
+    engine: opts.engine || 'puppeteer', 
+    puppeteer: {
+      args: opts.puppeteer?.args,
+      headless: true
+    },
+    playwright: {
+      args: opts.playwright?.args,
+      headless: true
+    },
   }, opts );
 
   // options to pass to puppeteer.launch()
-  this.options.puppeteer = Object.assign({
+  /*this.options.puppeteer = Object.assign({
     // defaults
     args: opts.args, // backwards compat
     headless: true
-  }, opts.puppeteer);
+  }, opts.puppeteer);*/
 
   this.running = false;
 };
@@ -105,7 +115,14 @@ proto.start = function( next ){
   let snap = this;
 
   return Promise.try(function(){
-    return puppeteer.launch(snap.options.puppeteer);
+    if(snap.options.engine == 'puppeteer'){
+    return puppeteer.launch(snap.options.puppeteer);}
+    else if(snap.options.engine == 'playwright'){
+      return playwright.chromium.launch(snap.options.playwright);
+    }
+    else{
+      throw new Error ('Unsupported Engine' + snap.options.engine);
+    }
   }).then(function( browser ){
     snap.browser = browser;
 
@@ -151,11 +168,19 @@ proto.shot = function( opts, next ){
   }).then(function(){
     return browserifyBrowserSrc();
   }).then(function(){
-    return snap.browser.newPage();
+    if(snap.options.engine == 'puppeteer'){
+    return snap.browser.newPage();}
+    else if(snap.options.engine == 'playwright'){
+      return snap.browser.newPage();
+    }
   }).then(function( puppeteerPage ){
     page = puppeteerPage;
   }).then(function(){
-    return page.setViewport({ width: opts.width, height: opts.height });
+    if(snap.options.engine == 'playwright'){
+    return page.setViewportSize({ width: opts.width, height: opts.height });}
+    else if(snap.options.engine == 'puppeteer'){
+      return page.setViewport({width: opts.width, height: opts.height});
+    }
   }).then(function(){
     let patchUri = function(uri){
       if( os.platform() === 'win32' ){
@@ -206,16 +231,27 @@ proto.shot = function( opts, next ){
     });
   }).then(function(){
     if( opts.resolveTo === 'json' ){ return null; } // can skip in json case
+    const screenshotoptions = {
+      type: opts.format,
+      encoding: 'base64'
+    };
+    if(opts.format == 'jpg'){screenshotoptions.quality = opts.quality}
+    if(snap.options.engine === 'playwright'){delete screenshotoptions.encoding;}
+    return page.screenshot(screenshotoptions);
+  }).then(function( screenshotResult ){
 
-    return page.screenshot({ type: opts.format, quality: opts.quality, encoding: 'base64' });
-  }).then(function( b64Img ){
+      if(snap.options.engine === 'playwright' && Buffer.isBuffer(screenshotResult)){
+          screenshotResult = screenshotResult.toString('base64');
+      }
+
+
     switch( opts.resolvesTo ){
       case 'base64uri':
-        return 'data:image/' + opts.format + ';base64,' + b64Img;
+        return 'data:image/' + opts.format + ';base64,' + screenshotResult;
       case 'base64':
-        return b64Img;
+        return screenshotResult;
       case 'stream':
-        return getStream( b64Img ).pipe( base64.decode() );
+        return getStream( screenshotResult ).pipe( base64.decode() );
       case 'json':
         return page.evaluate(function(){
           let posns = {};
